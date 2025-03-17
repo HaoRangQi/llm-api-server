@@ -22,6 +22,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import yaml from 'js-yaml';
+import os from 'os';
 
 // 加载环境变量
 dotenv.config();
@@ -217,8 +218,11 @@ async function createConversation(deviceId) {
     "Content-Type": "application/json",
   };
 
+  const apiUrl = `${DS_API_DOMAIN}/ai-search/conversationApi/v1/create`;
+  
+  debugLog(1, "INFO", `创建DeepSeek对话: ${apiUrl}`);
   debugLog(3, "API", "Create Conversation Request:", {
-    url: `${DS_API_DOMAIN}/ai-search/conversationApi/v1/create`,
+    url: apiUrl,
     method: "POST",
     headers,
     body: JSON.stringify(payload),
@@ -229,7 +233,7 @@ async function createConversation(deviceId) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), DS_TIMEOUT_MS);
     
-    const response = await fetch(`${DS_API_DOMAIN}/ai-search/conversationApi/v1/create`, {
+    const response = await fetch(apiUrl, {
       method: "POST",
       headers: headers,
       body: JSON.stringify(payload),
@@ -248,6 +252,8 @@ async function createConversation(deviceId) {
     if (!response.ok) {
       console.error(`Error: ${response.status}`);
       console.error(responseText);
+      debugLog(1, "ERROR", `创建对话失败: ${response.status}`, responseText);
+      debugLog(1, "ERROR", `请求详情: URL=${apiUrl}, Headers=${JSON.stringify(headers)}, Body=${JSON.stringify(payload)}`);
       return "";
     }
 
@@ -929,33 +935,48 @@ async function handleDeepClaudeRequest(userInput, stream, res, temperature, max_
     
     // 步骤1: 生成设备ID和会话ID用于DeepSeek
     const deviceId = generateDeviceId();
+    debugLog(2, "INFO", `生成设备ID: ${deviceId}`);
     
     // 创建一个新的对话会话
     debugLog(2, "INFO", "正在创建DeepSeek对话");
     const conversationId = await createConversation(deviceId);
     if (!conversationId) {
-      debugLog(1, "ERROR", "无法创建DeepSeek对话");
-      return res.status(500).json({
-        error: {
-          message: "无法创建DeepSeek对话",
-          type: "server_error",
-          step: "create_conversation"
-        }
-      });
+      debugLog(1, "ERROR", "无法创建DeepSeek对话，降级为直接使用Claude");
+      return handleDirectClaudeRequest(userInput, stream, res, temperature, max_tokens, modelId);
     }
+    
+    debugLog(2, "INFO", `成功创建对话，ID: ${conversationId}`);
     
     // 步骤2: 获取DeepSeek的思考内容
     debugLog(2, "INFO", "正在获取DeepSeek思考内容");
-    const thinking = await getDeepSeekThinking(deviceId, conversationId, userInput);
-    if (!thinking) {
-      debugLog(1, "ERROR", "无法获取DeepSeek思考内容");
-      return res.status(500).json({
-        error: {
-          message: "无法获取DeepSeek思考内容",
-          type: "server_error",
-          step: "get_thinking"
+    
+    // 添加重试机制
+    let thinking = null;
+    let retryCount = 0;
+    const maxRetries = 2;
+    
+    while (retryCount <= maxRetries && !thinking) {
+      if (retryCount > 0) {
+        debugLog(1, "INFO", `重试获取思考内容 (${retryCount}/${maxRetries})`);
+      }
+      
+      try {
+        thinking = await getDeepSeekThinking(deviceId, conversationId, userInput);
+      } catch (error) {
+        debugLog(1, "ERROR", `获取思考内容失败 (尝试 ${retryCount+1}/${maxRetries+1}): ${error.message}`);
+        
+        if (retryCount === maxRetries) {
+          debugLog(1, "WARN", "获取思考内容失败，降级为直接使用Claude");
+          return handleDirectClaudeRequest(userInput, stream, res, temperature, max_tokens, modelId);
         }
-      });
+      }
+      
+      retryCount++;
+    }
+    
+    if (!thinking) {
+      debugLog(1, "ERROR", "无法获取DeepSeek思考内容，降级为直接使用Claude");
+      return handleDirectClaudeRequest(userInput, stream, res, temperature, max_tokens, modelId);
     }
     
     debugLog(1, "INFO", `成功获取思考内容，长度: ${thinking.length}`);
@@ -991,10 +1012,25 @@ ${thinking}
       
       // 步骤5: 发送请求到Claude API
       const requestData = {
+        provider: CLAUDE_PROVIDER,
         model: claudeModel,
-        prompt: claudePrompt,
-        temperature: temperature,
-        max_tokens_to_sample: max_tokens,
+        provider_request: {
+          model: claudeModel,
+          max_tokens: max_tokens,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: claudePrompt,
+                },
+              ],
+            },
+          ],
+          system: "",
+          temperature: temperature,
+        },
       };
       
       // 在发送Claude请求之前添加
@@ -1007,9 +1043,153 @@ ${thinking}
       }
       
       if (stream) {
-        // ... 流式处理代码
+        // 流式响应处理
+        const response = await axios({
+          method: "post",
+          url: CLAUDE_API_URL,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `${API_KEY}`,
+          },
+          data: requestData,
+          responseType: "stream",
+        });
+
+        let responseText = "";
+        let id = crypto.randomUUID();
+        let created = Math.floor(Date.now() / 1000);
+
+        // 发送初始 SSE 事件
+        res.write(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: claudeModel, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] })}\n\n`);
+
+        response.data.on("data", (chunk) => {
+          const chunkStr = chunk.toString();
+          const lines = chunkStr.split("\n").filter((line) => line.trim());
+
+          for (const line of lines) {
+            try {
+              const data = JSON.parse(line);
+
+              if (data.type === "content_block_delta" && data.delta.type === "text_delta") {
+                const textChunk = data.delta.text;
+                responseText += textChunk;
+                
+                // 发送文本块作为 SSE 事件
+                const sseEvent = {
+                  id,
+                  object: "chat.completion.chunk",
+                  created,
+                  model: "deepclaude",
+                  choices: [
+                    {
+                      index: 0,
+                      delta: { content: textChunk },
+                      finish_reason: null
+                    }
+                  ]
+                };
+                
+                res.write(`data: ${JSON.stringify(sseEvent)}\n\n`);
+              }
+            } catch (error) {
+              debugLog(2, "ERROR", "JSON解析错误:", error.message, "行内容:", line);
+            }
+          }
+        });
+
+        response.data.on("end", () => {
+          // 发送结束 SSE 事件
+          const finalEvent = {
+            id,
+            object: "chat.completion.chunk",
+            created,
+            model: "deepclaude",
+            choices: [
+              {
+                index: 0,
+                delta: {},
+                finish_reason: "stop"
+              }
+            ]
+          };
+          
+          res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+        });
+
+        response.data.on("error", (err) => {
+          console.error("流数据接收错误:", err);
+          res.end();
+        });
       } else {
-        // ... 非流式处理代码
+        // 非流式响应处理
+        const response = await axios({
+          method: "post",
+          url: CLAUDE_API_URL,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `${API_KEY}`,
+          },
+          data: requestData,
+        });
+
+        // 解析响应数据
+        let fullContent = "";
+        
+        // 解析响应数据（字符串）
+        const lines = response.data.split('\n');
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          
+          try {
+            const eventData = JSON.parse(line);
+            
+            // 提取文本增量
+            if (eventData.type === "content_block_delta" && 
+                eventData.delta && 
+                eventData.delta.type === "text_delta") {
+              fullContent += eventData.delta.text;
+            }
+          } catch (error) {
+            debugLog(2, "ERROR", "JSON解析错误:", error.message, "行内容:", line);
+          }
+        }
+        
+        if (!fullContent) {
+          return res.status(500).json({
+            error: {
+              message: "Claude 响应格式异常",
+              type: "server_error",
+              details: response.data
+            }
+          });
+        }
+
+        // 构建最终响应
+        const result = {
+          id: crypto.randomUUID(),
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: "deepclaude",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: fullContent
+              },
+              finish_reason: "stop"
+            }
+          ],
+          usage: {
+            prompt_tokens: claudePrompt.length,
+            completion_tokens: fullContent.length,
+            total_tokens: claudePrompt.length + fullContent.length
+          }
+        };
+
+        res.json(result);
       }
     } catch (claudeError) {
       console.error("Claude API调用错误:", claudeError);
@@ -1038,6 +1218,243 @@ ${thinking}
   }
 }
 
+/**
+ * 当DeepSeek思考内容获取失败时，直接使用Claude处理原始用户输入
+ * 作为DeepClaude模式的降级方案
+ */
+async function handleDirectClaudeRequest(userInput, stream, res, temperature, max_tokens = 8192, modelId) {
+  debugLog(1, "INFO", "启用降级方案：直接使用Claude处理请求");
+  
+  // 添加前缀，告知用户当前使用的是降级方案
+  const prefixMessage = "【注意：DeepSeek思考内容获取失败，以下是Claude直接回答】\n\n";
+  
+  try {
+    // 获取API密钥
+    const API_KEY = getClaudeApiKey();
+    if (!API_KEY) {
+      return res.status(500).json({
+        error: {
+          message: "无法获取Claude API密钥，请检查配置",
+          type: "server_error",
+          param: null,
+          code: "invalid_api_key"
+        }
+      });
+    }
+
+    // 确定使用的Claude模型版本
+    const claudeModel = CLAUDE_DEFAULT_MODEL;
+    
+    debugLog(1, "INFO", `使用Claude模型: ${claudeModel}`);
+
+    // 构建请求数据
+    const requestData = {
+      provider: CLAUDE_PROVIDER,
+      model: claudeModel,
+      provider_request: {
+        model: claudeModel,
+        max_tokens: max_tokens,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: userInput,
+              },
+            ],
+          },
+        ],
+        system: "",
+        temperature: temperature,
+      },
+    };
+
+    if (stream) {
+      // 流式响应处理
+      const response = await axios({
+        method: "post",
+        url: CLAUDE_API_URL,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `${API_KEY}`,
+        },
+        data: requestData,
+        responseType: "stream",
+      });
+
+      let responseText = "";
+      let id = crypto.randomUUID();
+      let created = Math.floor(Date.now() / 1000);
+      let prefixSent = false;
+
+      // 发送初始 SSE 事件
+      res.write(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: "deepclaude", choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] })}\n\n`);
+
+      // 发送前缀消息
+      const prefixEvent = {
+        id,
+        object: "chat.completion.chunk",
+        created,
+        model: "deepclaude",
+        choices: [
+          {
+            index: 0,
+            delta: { content: prefixMessage },
+            finish_reason: null
+          }
+        ]
+      };
+      
+      res.write(`data: ${JSON.stringify(prefixEvent)}\n\n`);
+      prefixSent = true;
+
+      response.data.on("data", (chunk) => {
+        const chunkStr = chunk.toString();
+        const lines = chunkStr.split("\n").filter((line) => line.trim());
+
+        for (const line of lines) {
+          try {
+            const data = JSON.parse(line);
+
+            if (data.type === "content_block_delta" && data.delta.type === "text_delta") {
+              const textChunk = data.delta.text;
+              responseText += textChunk;
+              
+              // 发送文本块作为 SSE 事件
+              const sseEvent = {
+                id,
+                object: "chat.completion.chunk",
+                created,
+                model: "deepclaude",
+                choices: [
+                  {
+                    index: 0,
+                    delta: { content: textChunk },
+                    finish_reason: null
+                  }
+                ]
+              };
+              
+              res.write(`data: ${JSON.stringify(sseEvent)}\n\n`);
+            }
+          } catch (error) {
+            debugLog(2, "ERROR", "JSON解析错误:", error.message, "行内容:", line);
+          }
+        }
+      });
+
+      response.data.on("end", () => {
+        // 发送结束 SSE 事件
+        const finalEvent = {
+          id,
+          object: "chat.completion.chunk",
+          created,
+          model: "deepclaude",
+          choices: [
+            {
+              index: 0,
+              delta: {},
+              finish_reason: "stop"
+            }
+          ]
+        };
+        
+        res.write(`data: ${JSON.stringify(finalEvent)}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
+
+      response.data.on("error", (err) => {
+        console.error("流数据接收错误:", err);
+        res.end();
+      });
+    } else {
+      // 非流式响应处理
+      const response = await axios({
+        method: "post",
+        url: CLAUDE_API_URL,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `${API_KEY}`,
+        },
+        data: requestData,
+      });
+
+      // 解析响应数据
+      let fullContent = "";
+      
+      // 解析响应数据（字符串）
+      const lines = response.data.split('\n');
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        
+        try {
+          const eventData = JSON.parse(line);
+          
+          // 提取文本增量
+          if (eventData.type === "content_block_delta" && 
+              eventData.delta && 
+              eventData.delta.type === "text_delta") {
+            fullContent += eventData.delta.text;
+          }
+        } catch (error) {
+          debugLog(2, "ERROR", "JSON解析错误:", error.message, "行内容:", line);
+        }
+      }
+      
+      if (!fullContent) {
+        return res.status(500).json({
+          error: {
+            message: "Claude 响应格式异常",
+            type: "server_error",
+            details: response.data
+          }
+        });
+      }
+
+      // 添加前缀
+      fullContent = prefixMessage + fullContent;
+
+      // 构建最终响应
+      const result = {
+        id: crypto.randomUUID(),
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "deepclaude",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: fullContent
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: userInput.length,
+          completion_tokens: fullContent.length,
+          total_tokens: userInput.length + fullContent.length
+        }
+      };
+
+      res.json(result);
+    }
+  } catch (error) {
+    console.error("Claude API 错误:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: {
+          message: "调用 Claude API 失败",
+          type: "server_error",
+          details: error.message
+        }
+      });
+    }
+  }
+}
+
 // 获取 DeepSeek 思考内容的辅助函数
 async function getDeepSeekThinking(deviceId, conversationId, message) {
   try {
@@ -1047,11 +1464,17 @@ async function getDeepSeekThinking(deviceId, conversationId, message) {
     const timestamp = Date.now();
     const nonce = generateNanoId(20);
     
-    // 构建请求体
+    // 设定模型和用户操作
+    const userAction = ["deep"]; // 使用deep模式获取思考过程
+    
+    // 构建请求体 - 与handleDeepSeekRequest保持一致
     const payload = {
-      conversation_id: conversationId,
-      message: message,
-      stream: true 
+      stream: true,
+      botCode: "AI_SEARCH",
+      userAction: userAction.join(","),
+      model: "deepseek",
+      conversationId: conversationId,
+      question: message
     };
     
     debugLog(3, "DEBUG", "DeepSeek请求参数:", { deviceId, conversationId, message });
@@ -1059,26 +1482,35 @@ async function getDeepSeekThinking(deviceId, conversationId, message) {
     const sign = generateSign(timestamp, payload, nonce);
     
     // 构建API URL和请求头
+    const apiUrl = `${DS_API_DOMAIN}/ai-search/chatApi/v1/chat`;
+    const headers = {
+      Origin: "https://ai.dangbei.com",
+      Referer: "https://ai.dangbei.com/",
+      "User-Agent": DS_USER_AGENT,
+      deviceId: deviceId,
+      nonce: nonce,
+      sign: sign,
+      timestamp: timestamp.toString(),
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    };
+    
+    // 记录完整请求信息用于调试
+    debugLog(1, "INFO", `DeepSeek API请求: ${apiUrl}`);
+    debugLog(2, "DEBUG", "请求头:", headers);
+    debugLog(2, "DEBUG", "请求体:", payload);
+    
     try {
-      const response = await fetch(`${DS_API_DOMAIN}/ai-search/chatApi/v1/chat`, {
+      const response = await fetch(apiUrl, {
         method: "POST",
-        headers: {
-          Origin: "https://ai.dangbei.com",
-          Referer: "https://ai.dangbei.com/",
-          "User-Agent": DS_USER_AGENT,
-          deviceId: deviceId,
-          nonce: nonce,
-          sign: sign,
-          timestamp: timestamp.toString(),
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-        },
+        headers: headers,
         body: JSON.stringify(payload),
       });
       
       if (!response.ok) {
         const errorText = await response.text();
         debugLog(1, "ERROR", `DeepSeek API错误响应: ${response.status}`, errorText);
+        debugLog(1, "ERROR", `请求详情: URL=${apiUrl}, Headers=${JSON.stringify(headers)}, Body=${JSON.stringify(payload)}`);
         throw new Error(`DeepSeek API返回错误状态码: ${response.status}, 错误详情: ${errorText}`);
       }
       
@@ -1281,12 +1713,40 @@ app.get('/admin/tokens', (req, res) => {
   }
 });
 
-// 启动服务器
+/**
+ * 获取本机IPv4地址
+ * 用于在服务器启动时显示可访问的URL
+ * 
+ * @returns {string} 本机IPv4地址或localhost
+ */
+function getLocalIPv4() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      // 跳过非IPv4和内部接口
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return '127.0.0.1'; // 如果没找到，返回localhost
+}
+
+// 在服务器启动时显示增强的URL信息
 app.listen(PORT, () => {
-  console.log(`API 服务器已启动，监听端口: ${PORT}`);
-  console.log(`支持的模型: claude-3-sonnet-latest, deepseek-r1, deepclaude`);
+  const ipv4 = getLocalIPv4();
+  
+  console.log(`API服务器已启动，监听端口: ${PORT}`);
   console.log(`调试模式: ${DEBUG_MODE ? "开启" : "关闭"}`);
+  console.log(`支持的模型: claude-3-sonnet-latest, deepseek-r1, deepclaude`);
+  
+  console.log("\n=== 本地访问 ===");
   console.log(`健康检查: http://localhost:${PORT}/health`);
   console.log(`模型列表: http://localhost:${PORT}/v1/models`);
   console.log(`聊天接口: http://localhost:${PORT}/v1/chat/completions`);
-}); 
+  
+  console.log("\n=== 网络访问 ===");
+  console.log(`健康检查: http://${ipv4}:${PORT}/health`);
+  console.log(`模型列表: http://${ipv4}:${PORT}/v1/models`);
+  console.log(`聊天接口: http://${ipv4}:${PORT}/v1/chat/completions`);
+});
