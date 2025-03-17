@@ -147,9 +147,16 @@ function getClaudeApiKey() {
  * @returns {string} 生成的设备ID
  */
 function generateDeviceId() {
-  const uuid = crypto.randomUUID().replace(/-/g, "");
+  // 使用randomBytes代替randomUUID，因为randomUUID在Node.js 15.6.0及以上版本才可用
+  const bytes = crypto.randomBytes(16);
+  // 设置UUID版本为4（随机）
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  // 设置变体位
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  
+  const uuid = bytes.toString('hex').match(/(.{8})(.{4})(.{4})(.{4})(.{12})/).slice(1).join('-');
   const nanoid = generateNanoId(20);
-  return `${uuid}_${nanoid}`;
+  return `${uuid.replace(/-/g, "")}_${nanoid}`;
 }
 
 /**
@@ -1138,6 +1145,141 @@ async function getDeepSeekThinking(deviceId, conversationId, message) {
     return null;
   }
 }
+
+/**
+ * 管理API - 更新API令牌
+ * 通过POST请求更新API令牌文件
+ * 需要提供管理密钥进行身份验证
+ */
+app.post('/admin/update-tokens', (req, res) => {
+  // 获取请求中的管理密钥
+  const adminKey = req.headers['x-admin-key'];
+  
+  // 验证管理密钥 (从环境变量或配置中获取)
+  const validAdminKey = process.env.ADMIN_KEY || config.server.admin_key || 'change-this-admin-key';
+  
+  if (!adminKey || adminKey !== validAdminKey) {
+    debugLog(1, "ERROR", "管理API访问被拒绝: 无效的管理密钥");
+    return res.status(401).json({
+      error: {
+        message: "无效的管理密钥",
+        type: "authentication_error",
+        code: "invalid_admin_key"
+      }
+    });
+  }
+  
+  // 获取请求体中的令牌数据
+  const { tokens } = req.body;
+  
+  if (!tokens || !Array.isArray(tokens)) {
+    return res.status(400).json({
+      error: {
+        message: "无效的令牌数据格式，应为令牌数组",
+        type: "invalid_request_error",
+        code: "invalid_tokens_format"
+      }
+    });
+  }
+  
+  try {
+    // 获取令牌文件路径
+    const tokenPath = CLAUDE_API_KEY_PATH;
+    
+    // 确保文件路径不为空
+    if (!tokenPath || tokenPath.trim() === '') {
+      throw new Error("API密钥文件路径未配置");
+    }
+    
+    // 确保目录存在
+    const tokenDir = path.dirname(tokenPath);
+    if (!fs.existsSync(tokenDir)) {
+      fs.mkdirSync(tokenDir, { recursive: true });
+      debugLog(2, "INFO", `创建令牌文件目录: ${tokenDir}`);
+    }
+    
+    // 将令牌数组写入文件（每行一个令牌）
+    fs.writeFileSync(tokenPath, tokens.join('\n'), 'utf8');
+    
+    debugLog(1, "INFO", `成功更新API令牌文件，共${tokens.length}个令牌`);
+    
+    return res.status(200).json({
+      success: true,
+      message: `成功更新API令牌文件，共${tokens.length}个令牌`
+    });
+  } catch (error) {
+    debugLog(1, "ERROR", `更新API令牌文件失败: ${error.message}`);
+    
+    return res.status(500).json({
+      error: {
+        message: `更新API令牌文件失败: ${error.message}`,
+        type: "server_error",
+        code: "token_update_failed"
+      }
+    });
+  }
+});
+
+/**
+ * 管理API - 获取当前API令牌
+ * 通过GET请求获取当前API令牌列表
+ * 需要提供管理密钥进行身份验证
+ */
+app.get('/admin/tokens', (req, res) => {
+  // 获取请求中的管理密钥
+  const adminKey = req.headers['x-admin-key'];
+  
+  // 验证管理密钥 (从环境变量或配置中获取)
+  const validAdminKey = process.env.ADMIN_KEY || config.server.admin_key || 'change-this-admin-key';
+  
+  if (!adminKey || adminKey !== validAdminKey) {
+    debugLog(1, "ERROR", "管理API访问被拒绝: 无效的管理密钥");
+    return res.status(401).json({
+      error: {
+        message: "无效的管理密钥",
+        type: "authentication_error",
+        code: "invalid_admin_key"
+      }
+    });
+  }
+  
+  try {
+    // 获取令牌文件路径
+    const tokenPath = CLAUDE_API_KEY_PATH;
+    
+    // 确保文件路径不为空
+    if (!tokenPath || tokenPath.trim() === '') {
+      throw new Error("API密钥文件路径未配置");
+    }
+    
+    // 检查文件是否存在
+    if (!fs.existsSync(tokenPath)) {
+      return res.status(200).json({
+        tokens: []
+      });
+    }
+    
+    // 读取令牌文件
+    const content = fs.readFileSync(tokenPath, 'utf8');
+    const tokens = content.split('\n').filter(line => line.trim() !== '');
+    
+    debugLog(2, "INFO", `成功读取API令牌文件，共${tokens.length}个令牌`);
+    
+    return res.status(200).json({
+      tokens: tokens
+    });
+  } catch (error) {
+    debugLog(1, "ERROR", `读取API令牌文件失败: ${error.message}`);
+    
+    return res.status(500).json({
+      error: {
+        message: `读取API令牌文件失败: ${error.message}`,
+        type: "server_error",
+        code: "token_read_failed"
+      }
+    });
+  }
+});
 
 // 启动服务器
 app.listen(PORT, () => {

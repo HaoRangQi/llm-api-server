@@ -6,7 +6,7 @@
 module.exports = {
   apps: [{
     name: "multi-model-api",
-    script: "api-server.js",
+    script: "server.cjs",
     instances: 2,        // 使用最大核心数量
     exec_mode: "cluster",    // 使用集群模式实现负载均衡
     watch: false,            // 不自动重启

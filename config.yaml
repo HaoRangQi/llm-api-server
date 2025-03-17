@@ -7,10 +7,12 @@
 # port: 服务器监听端口
 # debug_mode: 是否启用调试模式（true/false）
 # debug_level: 调试信息详细程度（1-简单、2-详细、3-全部）
+# admin_key: 管理API的访问密钥（用于更新API令牌）
 server:
   port: 3000
   debug_mode: false
   debug_level: 2
+  admin_key: "123456"  # 请修改为强密码
 
 # Claude API配置
 # ---------------------------------------------------------
@@ -20,8 +22,8 @@ server:
 # api_key: 直接配置API密钥（优先使用，留空则使用文件）
 # api_key_path: API密钥文件路径（当api_key为空时使用）
 claude:
-  api_url: "https://xxxx/completion"
-  models:
+  api_url: "https://xxxxxx"
+  models:a
     - "claude-3-7-sonnet-latest"
     - "claude-3-5-sonnet-latest"
   provider: "anthropic"
@@ -34,7 +36,7 @@ claude:
 # user_agent: 请求使用的User-Agent
 # timeout_ms: 请求超时时间（毫秒）
 deepseek:
-  api_domain: "https://xxxxx"
+  api_domain: "xxxxxx"
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
   timeout_ms: 30000
 
