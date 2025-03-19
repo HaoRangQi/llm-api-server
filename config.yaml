@@ -28,7 +28,7 @@ claude:
     - "claude-3-5-sonnet-latest"
   provider: "anthropic"
   api_key: ""  # 留空则使用api_key_path
-  api_key_path: "/Users/macos/Downloads/xx"  # 当api_key为空时读取此文件
+  api_key_path: "/Users/macos/Downloads"  # 当api_key为空时读取此文件
 
 # DeepSeek API配置
 # ---------------------------------------------------------
@@ -67,3 +67,4 @@ models:
       thinking_model: "deepseek-r1",
       answer_model: "claude-3-7-sonnet-latest"
     } 
+
