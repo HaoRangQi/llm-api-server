@@ -49,6 +49,8 @@ export function initialize(config) {
     DEBUG_MODE,
     DEBUG_LEVEL
   });
+  
+  console.log("DeepSeek模型将始终使用原有配置Token，不处理请求头中的Token");
 }
 
 /**

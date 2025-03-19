@@ -21,14 +21,16 @@ server:
 # provider: API提供商
 # api_key: 直接配置API密钥（优先使用，留空则使用文件）
 # api_key_path: API密钥文件路径（当api_key为空时使用）
+# header_token_config: 请求头Token处理配置（"ignore"=忽略、其他值=添加Bearer前缀）
 claude:
-  api_url: ""
+  api_url: "https://"
   models:
     - "claude-3-7-sonnet-latest"
     - "claude-3-5-sonnet-latest"
   provider: "anthropic"
   api_key: ""  # 留空则使用api_key_path
-  api_key_path: "/Users/macos/Downloads"  # 当api_key为空时读取此文件
+  api_key_path: "/Users/macos/Downloads/"  # 当api_key为空时读取此文件
+  header_token_config: "ignore"  # 处理请求头Token的方式："ignore"=忽略非Bearer格式、其他值=添加Bearer前缀
 
 # DeepSeek API配置
 # ---------------------------------------------------------

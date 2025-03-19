@@ -16,6 +16,7 @@ let CLAUDE_API_KEY;
 let CLAUDE_API_KEY_PATH;
 let DEBUG_MODE;
 let DEBUG_LEVEL;
+let HEADER_TOKEN_CONFIG; // 请求头Token配置
 
 // 文件系统模块，用于读取API密钥文件
 import fs from 'fs';
@@ -35,6 +36,7 @@ export function initialize(config) {
   CLAUDE_API_KEY_PATH = config.claude.api_key_path;
   DEBUG_MODE = config.server.debug_mode;
   DEBUG_LEVEL = config.server.debug_level || 1;
+  HEADER_TOKEN_CONFIG = config.claude.header_token_config || "ignore"; // 默认忽略请求头Token
 }
 
 /**
@@ -61,17 +63,70 @@ function debugLog(level, type, ...args) {
 }
 
 /**
+ * 从请求中获取Token
+ * 优先使用请求头中的Token，根据配置处理
+ * 如果没有请求头Token，则使用配置中的Token
+ * 
+ * @param {Object} req Express请求对象
+ * @returns {string|null} 处理后的Token或null
+ */
+function getTokenFromRequest(req) {
+  const authHeader = req.headers.authorization;
+  
+  // 检查请求头中是否有Token
+  if (authHeader) {
+    debugLog(2, "INFO", "从请求头获取到Token:", authHeader.substring(0, 15) + "...");
+    
+    // 检查是否以"Bearer"开头
+    if (authHeader.startsWith("Bearer ")) {
+      debugLog(2, "INFO", "请求头Token已包含Bearer前缀");
+      return authHeader;
+    } else {
+      // 根据配置决定如何处理
+      if (HEADER_TOKEN_CONFIG === "ignore") {
+        debugLog(2, "INFO", `配置为忽略非Bearer格式的请求头Token(${HEADER_TOKEN_CONFIG})，使用默认配置Token`);
+        return null; // 返回null表示使用默认配置
+      } else {
+        // 添加Bearer前缀
+        debugLog(2, "INFO", `为请求头Token添加Bearer前缀(${HEADER_TOKEN_CONFIG})`);
+        return `Bearer ${authHeader}`;
+      }
+    }
+  }
+  
+  debugLog(2, "INFO", "请求头中无Token，使用配置Token");
+  return null;
+}
+
+/**
  * 获取Claude API密钥
  * 优先使用配置直接提供的API密钥
  * 如果未配置直接密钥或为空，则尝试从文件读取
  * 
+ * @param {Object} req Express请求对象，可选
  * @returns {string|null} API密钥或null（获取失败）
  */
-function getClaudeApiKey() {
+function getClaudeApiKey(req) {
+  // 如果提供了请求对象，尝试从请求头获取Token
+  if (req) {
+    const reqToken = getTokenFromRequest(req);
+    if (reqToken) {
+      debugLog(2, "INFO", "使用请求头中的Token");
+      return reqToken;
+    }
+  }
+  
   // 优先使用直接配置的API密钥（确保不为空字符串）
   if (CLAUDE_API_KEY && CLAUDE_API_KEY.trim() !== '') {
     debugLog(2, "INFO", "使用配置中的API密钥");
-    return CLAUDE_API_KEY.trim();
+    const apiKey = CLAUDE_API_KEY.trim();
+    
+    // 确保API密钥有Bearer前缀
+    if (!apiKey.startsWith("Bearer ")) {
+      debugLog(2, "INFO", "为配置中的API密钥添加Bearer前缀");
+      return `Bearer ${apiKey}`;
+    }
+    return apiKey;
   }
   
   // 其次尝试从文件读取
@@ -98,6 +153,12 @@ function getClaudeApiKey() {
     }
     
     debugLog(1, "INFO", "成功从文件读取API密钥");
+    
+    // 确保API密钥有Bearer前缀
+    if (!apiKey.startsWith("Bearer ")) {
+      debugLog(2, "INFO", "为文件中的API密钥添加Bearer前缀");
+      return `Bearer ${apiKey}`;
+    }
     return apiKey;
   } catch (error) {
     console.error('无法获取Claude API密钥:', error.message);
@@ -124,8 +185,8 @@ export async function handleClaudeRequest(req, res, message, stream, debugOption
     // 获取请求参数
     const { temperature = 0.7, max_tokens = 8192 } = req.body;
     
-    // 获取Claude API KEY
-    const API_KEY = await getClaudeApiKey();
+    // 获取Claude API KEY，传入请求对象以支持从请求头获取Token
+    let API_KEY = await getClaudeApiKey(req);
     if (!API_KEY) {
       console.error("[ERROR] 无法获取Claude API密钥");
       if (stream) {
@@ -143,6 +204,14 @@ export async function handleClaudeRequest(req, res, message, stream, debugOption
       }
       return;
     }
+    
+    // 再次确保API_KEY包含Bearer前缀
+    if (!API_KEY.startsWith("Bearer ")) {
+      API_KEY = `Bearer ${API_KEY}`;
+      console.log("[INFO] 最终调用前添加Bearer前缀到API_KEY");
+    }
+    
+    console.log("[DEBUG] 最终Authorization头:", API_KEY.substring(0, 15) + "...");
     
     // 设置模型
     const claudeModel = CLAUDE_DEFAULT_MODEL;
