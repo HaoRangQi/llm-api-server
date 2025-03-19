@@ -341,11 +341,37 @@ export async function handleDeepSeekRequest(req, res, userInput, stream = true, 
     }
 
     // 设定模型
-    const model = "openai.deepseek-r1";
+    const model = req.body.model || "openai.deepseek-r1";
     const modelId = model.split(".").pop();
     const userAction = [];
     if (modelId.startsWith("deepseek-r1")) {
       userAction.push("deep");
+    }
+    if (modelId.endsWith("-search")) {
+      userAction.push("online");
+    }
+    
+    // 检查用户查询是否包含搜索相关关键词
+    if (userInput.toLowerCase().includes("search") || userInput.toLowerCase().includes("查询") || 
+        userInput.toLowerCase().includes("find") || userInput.toLowerCase().includes("搜索")) {
+      if (!userAction.includes("online")) {
+        userAction.push("online");
+        console.log("[INFO] 检测到搜索相关关键词，启用online功能");
+      }
+    }
+    
+    // 也可以通过环境变量或全局配置来控制是否启用online功能
+    if (process.env.ENABLE_ONLINE_SEARCH === "true" || global.enableOnlineSearch === true) {
+      if (!userAction.includes("online")) {
+        userAction.push("online");
+        console.log("[INFO] 根据全局配置启用online功能");
+      }
+    }
+    
+    // 在使用online功能时通知用户
+    if (userAction.includes("online") && stream) {
+      res.write(`event: status\ndata: {\"status\":\"正在进行在线搜索...\"}\n\n`);
+      if (res.flush) res.flush();
     }
     
     const payload = {
@@ -672,6 +698,21 @@ export async function getDeepSeekThinking(deviceId, existingConversationId, mess
     
     // 设定模型和用户操作
     const userAction = ["deep"]; // 使用deep模式获取思考过程
+    
+    // 检查是否需要添加online功能
+    if (message.toLowerCase().includes("search") || message.toLowerCase().includes("查询") || 
+        message.toLowerCase().includes("find") || message.toLowerCase().includes("搜索")) {
+      userAction.push("online");
+      console.log("[INFO] 检测到搜索相关关键词，启用online功能");
+    }
+    
+    // 也可以通过环境变量或全局配置来控制是否启用online功能
+    if (process.env.ENABLE_ONLINE_SEARCH === "true" || global.enableOnlineSearch === true) {
+      if (!userAction.includes("online")) {
+        userAction.push("online");
+        console.log("[INFO] 根据全局配置启用online功能");
+      }
+    }
     
     // 构建请求体 - 与handleDeepSeekRequest保持一致
     const payload = {

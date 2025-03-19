@@ -27,7 +27,7 @@ let HEADER_TOKEN_CONFIG; // 请求头Token配置
  * @param {Object} config 配置对象
  */
 export function initialize(config) {
-  console.log("DeepClaude模型初始化开始，接收到配置对象");
+  console.log("[INFO] DeepClaude模型初始化中...");
   
   // 从Claude配置中获取参数
   CLAUDE_API_URL = config.claude.api_url;
@@ -40,13 +40,15 @@ export function initialize(config) {
   DEBUG_LEVEL = config.server.debug_level || 1;
   HEADER_TOKEN_CONFIG = config.claude.header_token_config || "ignore"; // 默认忽略请求头Token
   
-  console.log("DeepClaude模型初始化完成，配置参数:", {
+  debugLog(3, "DEBUG", "DeepClaude模型配置参数:", {
     CLAUDE_API_URL,
     CLAUDE_DEFAULT_MODEL,
     CLAUDE_PROVIDER,
     DEBUG_MODE,
     DEBUG_LEVEL
   });
+  
+  console.log("[INFO] DeepClaude模型初始化完成");
 }
 
 /**
@@ -85,26 +87,26 @@ function getTokenFromRequest(req) {
   
   // 检查请求头中是否有Token
   if (authHeader) {
-    console.log("[INFO] 从请求头获取到Token");
+    debugLog(3, "DEBUG", "从请求头获取到Token");
     
     // 检查是否以"Bearer"开头
     if (authHeader.startsWith("Bearer ")) {
-      console.log("[INFO] 请求头Token已包含Bearer前缀");
+      debugLog(3, "DEBUG", "请求头Token已包含Bearer前缀");
       return authHeader;
     } else {
       // 根据配置决定如何处理
       if (HEADER_TOKEN_CONFIG === "ignore") {
-        console.log("[INFO] 配置为忽略非Bearer格式的请求头Token，使用默认配置Token");
+        debugLog(3, "DEBUG", "配置为忽略非Bearer格式的请求头Token，使用默认配置Token");
         return null; // 返回null表示使用默认配置
       } else {
         // 添加Bearer前缀
-        console.log("[INFO] 为请求头Token添加Bearer前缀");
+        debugLog(3, "DEBUG", "为请求头Token添加Bearer前缀");
         return `Bearer ${authHeader}`;
       }
     }
   }
   
-  console.log("[INFO] 请求头中无Token，使用配置Token");
+  debugLog(3, "DEBUG", "请求头中无Token，使用配置Token");
   return null;
 }
 
@@ -121,19 +123,19 @@ async function getClaudeApiKey(req) {
   if (req) {
     const reqToken = getTokenFromRequest(req);
     if (reqToken) {
-      console.log("[INFO] 使用请求头中的Token");
+      debugLog(3, "DEBUG", "使用请求头中的Token");
       return reqToken;
     }
   }
 
   // 优先使用直接配置的API密钥（确保不为空字符串）
   if (CLAUDE_API_KEY && CLAUDE_API_KEY.trim() !== '') {
-    console.log("[INFO] 使用配置中的API密钥");
+    debugLog(3, "DEBUG", "使用配置中的API密钥");
     const apiKey = CLAUDE_API_KEY.trim();
     
     // 确保API密钥有Bearer前缀
     if (!apiKey.startsWith("Bearer ")) {
-      console.log("[INFO] 为配置中的API密钥添加Bearer前缀");
+      debugLog(3, "DEBUG", "为配置中的API密钥添加Bearer前缀");
       return `Bearer ${apiKey}`;
     }
     return apiKey;
@@ -142,7 +144,7 @@ async function getClaudeApiKey(req) {
   // 其次尝试从文件读取
   try {
     const tokenPath = CLAUDE_API_KEY_PATH;
-    console.log(`[INFO] 尝试从文件读取API密钥: ${tokenPath}`);
+    debugLog(3, "DEBUG", `尝试从文件读取API密钥: ${tokenPath}`);
     
     // 确保文件路径不为空
     if (!tokenPath || tokenPath.trim() === '') {
@@ -162,11 +164,11 @@ async function getClaudeApiKey(req) {
       throw new Error("API密钥文件内容为空");
     }
     
-    console.log("[INFO] 成功从文件读取API密钥");
+    debugLog(3, "DEBUG", "成功从文件读取API密钥");
     
     // 确保API密钥有Bearer前缀
     if (!apiKey.startsWith("Bearer ")) {
-      console.log("[INFO] 为文件中的API密钥添加Bearer前缀");
+      debugLog(3, "DEBUG", "为文件中的API密钥添加Bearer前缀");
       return `Bearer ${apiKey}`;
     }
     return apiKey;
@@ -258,6 +260,25 @@ export async function handleDeepClaudeRequest(req, res, message, stream, claudeM
       
       // 设定模型和用户操作
       const userAction = ["deep"]; // 使用deep模式获取思考过程
+      
+      // 检查是否需要添加online功能
+      if (message.toLowerCase().includes("search") || message.toLowerCase().includes("查询") || 
+          message.toLowerCase().includes("find") || message.toLowerCase().includes("搜索")) {
+        userAction.push("online");
+        console.log("[INFO] 检测到搜索相关关键词，启用online功能");
+      }
+      
+      // 检查请求中的模型ID
+      if (req.body && req.body.model) {
+        const modelId = req.body.model.split(".").pop();
+        if (modelId.endsWith("-search")) {
+          // 如果模型ID以-search结尾，且userAction中还没有online
+          if (!userAction.includes("online")) {
+            userAction.push("online");
+            console.log("[INFO] 根据模型ID启用online功能");
+          }
+        }
+      }
       
       // 构建请求体
       const payload = {
