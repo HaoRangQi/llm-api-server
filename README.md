@@ -5,12 +5,13 @@
 ## 功能特点
 
 - 支持 Claude 3.5/3.7 Sonnet 模型
-- 支持 DeepSeek R1 模型（**包含思考过程输出**）
+- 支持 DeepSeek R1 模型（**包含思考过程流式输出**）
 - 支持 DeepClaude 混合模型（DeepSeek 思考 + Claude 回答）
 - 兼容 OpenAI API 格式
-- 支持流式输出
+- 完整的流式输出支持（SSE）
+- 模块化代码结构，易于维护和扩展
 - 可配置温度和最大 token 数量
-- 全面的配置文件支持
+- 全面的配置文件支持和详细日志记录
 
 ## 安装
 
@@ -55,16 +56,18 @@ server:
 
 # Claude API配置 
 claude:
-  api_url: "https://llm.zed.dev/completion"
+  api_url: ""
   models:
     - "claude-3-7-sonnet-latest"
     - "claude-3-5-sonnet-latest"
+  provider: "anthropic"
   api_key: ""  # 直接配置API密钥
-  api_key_path: "/Users/macos/Downloads/eatworld/cursor/zedproxy/auth/api_tokens.txt"  # 或从文件读取
+  api_key_path: "/path/to/api_tokens.txt"  # 或从文件读取
 
 # DeepSeek API配置
 deepseek:
-  api_domain: "https://ai-api.dangbei.net"
+  api_domain: ""
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
   timeout_ms: 30000
 ```
 
@@ -83,7 +86,8 @@ curl http://localhost:3000/v1/chat/completions \
     "model": "claude-3-7-sonnet-latest",
     "messages": [
       {"role": "user", "content": "你好，介绍一下自己"}
-    ]
+    ],
+    "stream": true
   }'
 ```
 
@@ -102,27 +106,103 @@ curl http://localhost:3000/v1/chat/completions \
 
 ### 4. 使用混合模型 DeepClaude
 ```bash
+# 流式输出 (默认)
 curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "deepclaude",
     "messages": [
       {"role": "user", "content": "你好，介绍一下自己，10字"}
-    ]
+    ],
+    "stream": true
+  }'
+
+# 非流式输出
+curl http://localhost:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "deepclaude",
+    "messages": [
+      {"role": "user", "content": "你好，介绍一下自己，10字"}
+    ],
+    "stream": false
   }'
 ```
 
-## DeepSeek-R1 模式说明
+## 响应格式说明
 
-DeepSeek-R1 模型现在会显示思考过程，格式为：
+### 非流式响应格式
+```json
+{
+  "id": "uuid",
+  "object": "chat.completion",
+  "created": 1698765432,
+  "model": "model-name",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "回答内容..."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 123,
+    "completion_tokens": 456,
+    "total_tokens": 579
+  }
+}
+```
+
+### 流式响应格式 (SSE)
+```
+data: {"id":"uuid","object":"chat.completion.chunk","created":1698765432,"model":"model-name","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"uuid","object":"chat.completion.chunk","created":1698765432,"model":"model-name","choices":[{"index":0,"delta":{"content":"回答"},"finish_reason":null}]}
+
+data: {"id":"uuid","object":"chat.completion.chunk","created":1698765432,"model":"model-name","choices":[{"index":0,"delta":{"content":"内容"},"finish_reason":null}]}
+
+data: {"id":"uuid","object":"chat.completion.chunk","created":1698765432,"model":"model-name","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+## 模型特点说明
+
+### DeepSeek-R1 
+DeepSeek-R1 模型默认启用思考过程，格式为：
 
 ```
 <思考过程>
-[思考内容]
+[思考内容详情...]
 </思考过程>
 
 [最终回答内容]
 ```
+
+### DeepClaude 混合模型
+DeepClaude 混合模式结合了 DeepSeek 的思考能力和 Claude 的回答能力：
+
+1. 首先完整获取 DeepSeek 的思考内容（流式显示）
+2. 思考内容收集完毕后，将完整思考内容传递给 Claude
+3. Claude 基于完整思考内容生成最终回答（流式显示）
+
+该模型**同时支持流式和非流式输出**：
+- 流式模式下，实时展示思考过程和回答内容
+- 非流式模式下，等待完整思考和回答后一次性返回结果
+
+所有模型均支持完整的流式输出，提供更好的用户体验。
+
+## 代码结构
+
+服务器采用模块化设计，主要文件包括：
+
+- `api-server.js` - 主入口文件，处理HTTP请求和路由
+- `models/claude-model.js` - Claude模型处理模块
+- `models/deepseek-model.js` - DeepSeek模型处理模块
+- `models/deepclaude-model.js` - DeepClaude混合模型处理模块
 
 ## 部署说明
 
@@ -147,4 +227,22 @@ pm2 save
 3. 可选：使用Docker Compose进行更灵活的配置
 
 ### 使用Nginx反向代理
-建议在前端配置Nginx反向代理，以提供SSL和负载均衡能力。 
+建议在前端配置Nginx反向代理，以提供SSL和负载均衡能力。
+
+## 性能优化
+
+- 所有请求默认启用流式输出，提供更好的用户体验
+- 思考内容实时流式显示，无需等待完整内容
+- 优化了错误处理和降级策略
+- 添加了请求超时设置，避免长时间阻塞
+
+## 常见问题
+
+### 1. 创建DeepSeek会话失败
+请检查配置文件中DeepSeek的API域名和User-Agent设置是否正确。
+
+### 2. Claude API密钥无效
+请确保提供了有效的Claude API密钥，可以直接在配置文件中设置，或者通过文件路径指定。
+
+### 3. 流式输出不工作
+请确保客户端支持SSE（Server-Sent Events）格式，并正确处理流式响应。 
