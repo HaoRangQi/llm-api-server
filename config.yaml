@@ -23,13 +23,13 @@ server:
 # api_key_path: API密钥文件路径（当api_key为空时使用）
 # header_token_config: 请求头Token处理配置（"ignore"=忽略、其他值=添加Bearer前缀）
 claude:
-  api_url: "https://"
+  api_url: "https://llm.zed.dev/completion"
   models:
     - "claude-3-7-sonnet-latest"
     - "claude-3-5-sonnet-latest"
   provider: "anthropic"
   api_key: ""  # 留空则使用api_key_path
-  api_key_path: "/Users/macos/Downloads/"  # 当api_key为空时读取此文件
+  api_key_path: "/Users/macos/Downloads/eatworld/cursor/zedproxy/auth/api_tokens.txt"  # 当api_key为空时读取此文件
   header_token_config: "ignore"  # 处理请求头Token的方式："ignore"=忽略非Bearer格式、其他值=添加Bearer前缀
 
 # DeepSeek API配置
@@ -38,7 +38,7 @@ claude:
 # user_agent: 请求使用的User-Agent
 # timeout_ms: 请求超时时间（毫秒）
 deepseek:
-  api_domain: ""
+  api_domain: "https://ai-api.dangbei.net"
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
   timeout_ms: 30000
 
@@ -69,4 +69,5 @@ models:
       thinking_model: "deepseek-r1",
       answer_model: "claude-3-7-sonnet-latest"
     } 
+
 

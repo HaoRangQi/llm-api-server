@@ -399,7 +399,16 @@ export async function handleDeepClaudeRequest(req, res, message, stream, claudeM
           console.log("[INFO] 开始调用Claude处理完整思考内容");
           
           // 构建带有思考内容的提示
-          const prompt = `<think>\n\n\`\`\`\n${completeThinking.trim()}\n\`\`\`\n</think>\n\n${message}`;
+          const prompt = `Here's my original input:
+${message}
+
+Here's the reasoning from another model:
+${completeThinking.trim()}
+
+Based on this reasoning, please provide your response:`;
+          
+          // 打印Claude的输入内容到控制台
+          console.log("[DEBUG] Claude输入内容：\n", prompt);
           
           // 构建Claude请求体
           const requestData = {
@@ -615,7 +624,16 @@ export async function handleDeepClaudeRequest(req, res, message, stream, claudeM
           console.log("[INFO] 开始调用Claude处理完整思考内容");
           
           // 构建带有思考内容的提示
-          const prompt = `<think>\n\n\`\`\`\n${completeThinking.trim()}\n\`\`\`\n</think>\n\n${message}`;
+          const prompt = `Here's my original input:
+${message}
+
+Here's the reasoning from another model:
+${completeThinking.trim()}
+
+Based on this reasoning, please provide your response:`;
+          
+          // 打印Claude的输入内容到控制台
+          console.log("[DEBUG] Claude输入内容：\n", prompt);
           
           // 构建Claude请求体
           const requestData = {
