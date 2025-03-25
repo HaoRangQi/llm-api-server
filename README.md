@@ -12,6 +12,7 @@
 - 模块化代码结构，易于维护和扩展
 - 可配置温度和最大 token 数量
 - 全面的配置文件支持和详细日志记录
+- API令牌管理接口，方便更新模型访问密钥
 
 ## 安装
 
@@ -53,6 +54,7 @@ server:
   port: 3000
   debug_mode: false
   debug_level: 2  # 1-简单, 2-详细, 3-全部
+  admin_key: "your-admin-key"  # 管理接口验证密钥
 
 # Claude API配置 
 claude:
@@ -128,6 +130,82 @@ curl http://localhost:3000/v1/chat/completions \
     "stream": false
   }'
 ```
+
+### 5. 管理接口 - 更新API令牌 (需管理员权限)
+
+此接口用于批量更新API令牌文件，需要提供管理密钥进行身份验证。支持两种请求格式。
+
+#### 简单格式 (推荐)
+```bash
+curl http://localhost:3000/admin/update-tokens \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: your-admin-key" \
+  -d '{
+    "api_tokens": [
+      "your-api-key-value-1", 
+      "your-api-key-value-2"
+    ]
+  }'
+```
+
+在简单格式中，只需提供令牌值数组，系统会自动生成唯一的文件名。
+
+#### 详细格式 (自定义文件名)
+```bash
+curl http://localhost:3000/admin/update-tokens \
+  -H "Content-Type: application/json" \
+  -H "x-admin-key: your-admin-key" \
+  -d '{
+    "tokens": [
+      {
+        "name": "claude_api_key",
+        "value": "your-api-key-value"
+      },
+      {
+        "name": "deepseek_api_key",
+        "value": "another-api-key-value"
+      }
+    ]
+  }'
+```
+
+在详细格式中，可以为每个令牌指定自定义的名称，这将决定保存的文件名。
+
+#### 请求说明:
+- 简单格式: `api_tokens` 数组中直接提供令牌值，系统自动生成文件名
+- 详细格式: `tokens` 数组中提供 `name`（文件名）和 `value`（令牌值）
+
+#### 响应格式:
+```json
+{
+  "status": "success",
+  "results": [
+    {
+      "name": "claude_api_key",
+      "success": true,
+      "path": "/path/to/tokens/claude_api_key.token"
+    },
+    {
+      "name": "api_token_1688997654321_a1b2c3",
+      "success": true,
+      "path": "/path/to/tokens/api_token_1688997654321_a1b2c3.token"
+    }
+  ]
+}
+```
+
+#### 安全说明:
+- 管理密钥可通过`ADMIN_KEY`环境变量或`config.yaml`中的`server.admin_key`设置
+- 当只有一个令牌时，将直接写入到`config.yaml`中`claude.api_key_path`指定的路径
+- 当有多个令牌时，将保存在`api_key_path`所在目录的`tokens`子目录下
+- 文件名会进行安全处理，移除不安全字符
+- 此接口仅供管理员使用，确保管理密钥安全
+
+#### 用途:
+此接口主要用于在服务器运行时动态更新API密钥，无需重启服务。这对于以下场景特别有用：
+- API密钥轮换
+- 多模型支持时批量更新多个密钥
+- 通过其他系统自动更新密钥
 
 ## 响应格式说明
 

@@ -244,30 +244,102 @@ app.post('/admin/update-tokens', (req, res) => {
   }
   
   // 获取请求体中的令牌数据
-  const { tokens } = req.body;
+  let tokensArray = [];
   
-  if (!tokens || !Array.isArray(tokens)) {
+  // 兼容两种格式：{ "tokens": [...] } 和 { "api_tokens": [...] }
+  if (req.body.api_tokens && Array.isArray(req.body.api_tokens)) {
+    // 新格式: { "api_tokens": ["token1", "token2", ...] }
+    debugLog(2, "INFO", "检测到api_tokens格式的请求");
+    tokensArray = req.body.api_tokens.map(token => {
+      // 自动生成名称（使用时间戳+随机串）
+      const timestamp = Date.now();
+      const randomStr = Math.random().toString(36).substring(2, 8);
+      return {
+        name: `api_token_${timestamp}_${randomStr}`,
+        value: token
+      };
+    });
+  } else if (req.body.tokens && Array.isArray(req.body.tokens)) {
+    // 旧格式: { "tokens": [{ "name": "...", "value": "..." }, ...] }
+    debugLog(2, "INFO", "检测到tokens格式的请求");
+    tokensArray = req.body.tokens;
+  } else {
     return res.status(400).json({
       error: {
-        message: "请求格式不正确，需要提供tokens数组",
+        message: "请求格式不正确，需要提供api_tokens数组或tokens对象数组",
         type: "invalid_request_error",
         code: "invalid_request_body"
       }
     });
   }
   
+  if (tokensArray.length === 0) {
+    return res.status(400).json({
+      error: {
+        message: "令牌数组不能为空",
+        type: "invalid_request_error",
+        code: "empty_tokens_array"
+      }
+    });
+  }
+  
   // 更新令牌文件
   try {
-    // 创建令牌目录(如果不存在)
-    const tokenDir = path.join(__dirname, 'tokens');
+    // 获取Claude配置中的API密钥路径
+    const apiKeyPath = config.claude && config.claude.api_key_path 
+      ? config.claude.api_key_path 
+      : path.join(__dirname, 'tokens', 'claude_api_key.token');
+      
+    debugLog(2, "INFO", `将使用API密钥路径: ${apiKeyPath}`);
+    
+    // 确保目录存在
+    let tokenDir = path.dirname(apiKeyPath);
     if (!fs.existsSync(tokenDir)) {
+      debugLog(2, "INFO", `创建密钥目录: ${tokenDir}`);
+      fs.mkdirSync(tokenDir, { recursive: true });
+    }
+    
+    // 如果只有一个token，直接写入到配置的api_key_path
+    if (tokensArray.length === 1) {
+      try {
+        fs.writeFileSync(apiKeyPath, tokensArray[0].value.trim());
+        debugLog(1, "INFO", `API密钥已更新: ${apiKeyPath}`);
+        
+        res.json({
+          status: "success",
+          results: [{
+            name: tokensArray[0].name,
+            success: true,
+            path: apiKeyPath
+          }]
+        });
+        return;
+      } catch (writeError) {
+        console.error(`写入API密钥文件失败: ${writeError.message}`);
+        debugLog(2, "ERROR", `API密钥处理失败:`, writeError);
+        
+        res.status(500).json({
+          error: {
+            message: `写入API密钥文件失败: ${writeError.message}`,
+            type: "server_error",
+            details: writeError.message
+          }
+        });
+        return;
+      }
+    }
+    
+    // 如果有多个token，则创建tokens目录并分别保存
+    tokenDir = path.join(path.dirname(apiKeyPath), 'tokens');
+    if (!fs.existsSync(tokenDir)) {
+      debugLog(2, "INFO", `创建令牌目录: ${tokenDir}`);
       fs.mkdirSync(tokenDir, { recursive: true });
     }
     
     // 处理每个令牌
     const results = [];
     
-    for (const token of tokens) {
+    for (const token of tokensArray) {
       const { name, value } = token;
       
       if (!name || !value) {
@@ -279,9 +351,13 @@ app.post('/admin/update-tokens', (req, res) => {
         continue;
       }
       
+      debugLog(3, "DEBUG", `处理令牌: ${name}`);
+      
       // 格式化文件名，避免路径遍历
       const safeFileName = name.replace(/[^a-zA-Z0-9-_]/g, '_');
       const tokenPath = path.join(tokenDir, `${safeFileName}.token`);
+      
+      debugLog(3, "DEBUG", `令牌文件路径: ${tokenPath}`);
       
       try {
         fs.writeFileSync(tokenPath, value.trim());
@@ -293,6 +369,7 @@ app.post('/admin/update-tokens', (req, res) => {
         });
       } catch (writeError) {
         console.error(`写入令牌文件失败: ${writeError.message}`);
+        debugLog(2, "ERROR", `令牌${name}处理失败:`, writeError);
         results.push({
           name: name,
           success: false,
@@ -300,6 +377,8 @@ app.post('/admin/update-tokens', (req, res) => {
         });
       }
     }
+    
+    debugLog(2, "INFO", `令牌处理完成，成功: ${results.filter(r => r.success).length}，失败: ${results.filter(r => !r.success).length}`);
     
     res.json({
       status: "success",
@@ -348,9 +427,11 @@ app.listen(PORT, () => {
   console.log(`健康检查: http://localhost:${PORT}/health`);
   console.log(`模型列表: http://localhost:${PORT}/v1/models`);
   console.log(`聊天接口: http://localhost:${PORT}/v1/chat/completions`);
+  console.log(`管理接口: http://localhost:${PORT}/admin/update-tokens (需验证)`);
   
   console.log("\n=== 网络访问 ===");
   console.log(`健康检查: http://${ipv4}:${PORT}/health`);
   console.log(`模型列表: http://${ipv4}:${PORT}/v1/models`);
   console.log(`聊天接口: http://${ipv4}:${PORT}/v1/chat/completions`);
+  console.log(`管理接口: http://${ipv4}:${PORT}/admin/update-tokens (需验证)`);
 });
